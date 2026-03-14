@@ -1,0 +1,25 @@
+#!/bin/sh
+
+set -eu
+
+REPO_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PQS_REPO="/Users/celinezou/Skyscanner/pqs-pipeline-spark-jobs"
+PQS_OUTPUT_DIR="$PQS_REPO/.codex/memory-extract-output"
+
+run_flush() {
+  project_path="$1"
+  output_dir="$2"
+  printf 'Flushing layered memory for %s\n' "$project_path"
+  (
+    cd "$REPO_ROOT"
+    PROJECT_PATH="$project_path" \
+    OUTPUT_DIR="$output_dir" \
+    LLM_BACKEND="${LLM_BACKEND:-codex-cli}" \
+    IDLE_MINUTES="${IDLE_MINUTES:-25}" \
+    MAX_PENDING_MINUTES="${MAX_PENDING_MINUTES:-90}" \
+    "$REPO_ROOT/scripts/run-layered-flush"
+  )
+}
+
+run_flush "$REPO_ROOT" "$REPO_ROOT/output"
+run_flush "$PQS_REPO" "$PQS_OUTPUT_DIR"
