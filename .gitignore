@@ -4,3 +4,10 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+z-my-doc/
+.claude/
+.codex/
+output/
+skills/
+plan/
+archive/

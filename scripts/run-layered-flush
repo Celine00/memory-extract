@@ -1,0 +1,28 @@
+#!/bin/sh
+
+set -eu
+
+PROJECT_PATH="${PROJECT_PATH:-$PWD}"
+OUTPUT_DIR="${OUTPUT_DIR:-./output}"
+LLM_BACKEND="${LLM_BACKEND:-codex-cli}"
+IDLE_MINUTES="${IDLE_MINUTES:-25}"
+MAX_PENDING_MINUTES="${MAX_PENDING_MINUTES:-90}"
+
+if [ -n "${LLM_MODEL:-}" ]; then
+  exec python3 -m memory_promotion.cli flush-pending \
+    --project "$PROJECT_PATH" \
+    --output-dir "$OUTPUT_DIR" \
+    --llm-backend "$LLM_BACKEND" \
+    --llm-model "$LLM_MODEL" \
+    --idle-minutes "$IDLE_MINUTES" \
+    --max-pending-minutes "$MAX_PENDING_MINUTES" \
+    "$@"
+fi
+
+exec python3 -m memory_promotion.cli flush-pending \
+  --project "$PROJECT_PATH" \
+  --output-dir "$OUTPUT_DIR" \
+  --llm-backend "$LLM_BACKEND" \
+  --idle-minutes "$IDLE_MINUTES" \
+  --max-pending-minutes "$MAX_PENDING_MINUTES" \
+  "$@"

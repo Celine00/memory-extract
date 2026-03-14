@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -eu
+
+PROJECT_PATH="${PROJECT_PATH:-$PWD}"
+OUTPUT_DIR="${OUTPUT_DIR:-./output}"
+SOURCE_PLATFORMS="${SOURCE_PLATFORMS:-codex,claude}"
+
+exec python3 -m memory_promotion.cli ingest-and-filter \
+  --project "$PROJECT_PATH" \
+  --output-dir "$OUTPUT_DIR" \
+  --source-platforms "$SOURCE_PLATFORMS" \
+  "$@"

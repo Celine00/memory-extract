@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -eu
+
+# Use Claude without loading slash commands/skills. This avoids failures from
+# unrelated broken global skills under ~/.claude/skills while keeping the fix
+# local to this repo.
+exec claude --disable-slash-commands "$@"
