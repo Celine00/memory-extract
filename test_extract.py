@@ -375,7 +375,7 @@ class LayeredModeTests(unittest.TestCase):
                     ("user", "Use unittest for verification."),
                 ],
             )
-            full_result = extract.load_codex_session_messages(session_path, "/tmp/project").messages
+            full_result = extract.load_codex_session_messages(session_path, "/tmp/project")
             original_stat = session_path.stat()
             state = extract.ScopeState(
                 version=extract.STATE_VERSION,
@@ -865,4 +865,115 @@ class BatchCaptureTests(unittest.TestCase):
         self.assertIn("Errors: 2", output)
 
 
-class PendingQueueTests.
+class PendingQueueTests(unittest.TestCase):
+    def test_collect_pending_windows_uses_context_window(self):
+        messages = [
+            SimpleNamespace(
+                message_id="m1",
+                platform="codex",
+                session_file="/tmp/session.jsonl",
+                jsonl_line=1,
+                timestamp="2026-03-13T10:00:00Z",
+                role="user",
+                content="Please keep answers concise and update README if behavior changes.",
+            ),
+            SimpleNamespace(
+                message_id="m2",
+                platform="codex",
+                session_file="/tmp/session.jsonl",
+                jsonl_line=2,
+                timestamp="2026-03-13T10:00:05Z",
+                role="assistant",
+                content="Understood, I will keep answers concise and update README as needed.",
+            ),
+            SimpleNamespace(
+                message_id="m3",
+                platform="codex",
+                session_file="/tmp/session.jsonl",
+                jsonl_line=3,
+                timestamp="2026-03-13T10:00:10Z",
+                role="user",
+                content="Implement the parser refactor.",
+            ),
+        ]
+
+        windows = promotion_pipeline.collect_pending_windows("/tmp/project", messages)
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].message_ids, ("m1", "m2", "m3"))
+        self.assertIn("explicit_request", windows[0].reason_codes)
+
+    def test_process_pending_flush_builds_events_and_rewrites_memory(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "output"
+            project_path = "/tmp/project"
+            paths = promotion_pipeline.build_layered_paths(output_dir, project_path)
+            pending_messages = [
+                SimpleNamespace(
+                    message_id="m1",
+                    platform="codex",
+                    session_file="/tmp/session.jsonl",
+                    jsonl_line=1,
+                    timestamp="2026-03-13T10:00:00Z",
+                    role="user",
+                    content="Please keep answers concise.",
+                ),
+                SimpleNamespace(
+                    message_id="m2",
+                    platform="codex",
+                    session_file="/tmp/session.jsonl",
+                    jsonl_line=2,
+                    timestamp="2026-03-13T10:00:05Z",
+                    role="assistant",
+                    content="Understood, I will keep answers concise.",
+                ),
+            ]
+            windows = promotion_pipeline.collect_pending_windows(project_path, pending_messages)
+            promotion_pipeline.save_pending_windows(paths.pending_path, windows)
+
+            llm_calls: list[dict[str, object]] = []
+
+            def fake_llm(prompt, **kwargs):
+                llm_calls.append({"prompt": prompt, **kwargs})
+                if kwargs.get("output_schema"):
+                    return json.dumps(
+                        {
+                            "candidates": [
+                                {
+                                    "text": "Keep answers concise.",
+                                    "category": "communication",
+                                    "durability": "durable",
+                                    "signal_type": "explicit",
+                                    "evidence_ids": ["m1", "m2"],
+                                }
+                            ]
+                        }
+                    )
+                return "# Project Memory\n\n## Communication Style\n- Keep answers concise.\n"
+
+            state = extract.ScopeState(version=extract.STATE_VERSION, project_path=project_path)
+            result = promotion_pipeline.process_pending_flush(
+                project_path=project_path,
+                output_dir=output_dir,
+                state=state,
+                llm_call=fake_llm,
+                llm_backend="codex-cli",
+                llm_model=None,
+                now=datetime.fromisoformat("2026-03-13T11:00:00+00:00"),
+                cwd=tmp_dir,
+            )
+
+            self.assertTrue(result["ready_to_flush"])
+            self.assertEqual(result["raw_event_count"], 1)
+            self.assertEqual(len(llm_calls), 2)
+            self.assertTrue(paths.curated_memory_path.exists())
+            self.assertTrue(paths.deterministic_memory_path.exists())
+            facts = promotion_pipeline.load_searchable_facts(paths.facts_path)
+            self.assertEqual(len(facts), 1)
+            self.assertEqual(facts[0].promotion_state, "promoted")
+            queued = [window for window in promotion_pipeline.load_pending_windows(paths.pending_path) if window.status == "queued"]
+            self.assertEqual(queued, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -456,5 +456,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     rewrite = subparsers.add_parser(
         "rewrite-memory",
-        help="Rewrite the curated MEMORY.md from promoted facts using a lightweight LLM pass"
-[…]
+        help="Rewrite the curated MEMORY.md from promoted facts using a lightweight LLM pass",
+    )
+    rewrite.add_argument("--project", default=".", help="Project path to process. Default: current directory.")
+    rewrite.add_argument("--output-dir", type=Path, default=Path("./output"))
+    rewrite.add_argument("--llm-backend", choices=extract.SUPPORTED_LLM_BACKENDS, default="codex-cli")
+    rewrite.add_argument("--llm-model")
+    rewrite.add_argument("--dry-run", action="store_true")
+
+    prepare = subparsers.add_parser(
+        "prepare-context",
+        help="Build the pre-turn context block from promoted memory plus relevant searchable recall",
+    )
+    prepare.add_argument("--project", default=".", help="Project path to process. Default: current directory.")
+    prepare.add_argument("--output-dir", type=Path, default=Path("./output"))
+    prepare.add_argument("--prompt", required=True, help="Current user prompt used for lexical recall.")
+    prepare.add_argument("--limit", type=int, default=5, help="Maximum recall bullets. Default: 5.")
+    prepare.add_argument("--show-stats", action="store_true")
+
+    args = parser.parse_args(argv)
+    if args.command in {"capture", "capture-all", "ingest-and-filter"}:
+        args.source_platforms = _parse_platforms(args.source_platforms)
+    if getattr(args, "max_projects", 0) < 0:
+        parser.error("--max-projects must be >= 0")
+    if getattr(args, "skip_if_recent", 0) < 0:
+        parser.error("--skip-if-recent must be >= 0")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.command == "capture":
+        return run_capture(args)
+    if args.command == "capture-all":
+        return run_capture_all(args)
+    if args.command == "ingest-and-filter":
+        return run_ingest_and_filter(args)
+    if args.command == "flush-pending":
+        return run_flush_pending(args)
+    if args.command == "rewrite-memory":
+        return run_rewrite_memory(args)
+    if args.command == "prepare-context":
+        return run_prepare_context(args)
+    raise RuntimeError(f"Unsupported command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
