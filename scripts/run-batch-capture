@@ -1,0 +1,22 @@
+#!/bin/sh
+
+set -eu
+
+OUTPUT_DIR="${OUTPUT_DIR:-./output}"
+LLM_BACKEND="${LLM_BACKEND:-codex-cli}"
+SKIP_RECENT="${SKIP_RECENT:-6}"
+
+if [ -n "${LLM_MODEL:-}" ]; then
+  exec python3 -m memory_promotion.cli capture-all \
+    --output-dir "$OUTPUT_DIR" \
+    --llm-backend "$LLM_BACKEND" \
+    --llm-model "$LLM_MODEL" \
+    --skip-if-recent "$SKIP_RECENT" \
+    "$@"
+fi
+
+exec python3 -m memory_promotion.cli capture-all \
+  --output-dir "$OUTPUT_DIR" \
+  --llm-backend "$LLM_BACKEND" \
+  --skip-if-recent "$SKIP_RECENT" \
+  "$@"
