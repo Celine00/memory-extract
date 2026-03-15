@@ -1,4 +1,6 @@
+import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -8,6 +10,7 @@ from unittest.mock import patch
 
 import extract
 import prompts as prompt_templates
+from memory_promotion import cli as promotion_cli
 from memory_promotion import pipeline as promotion_pipeline
 
 
@@ -372,7 +375,7 @@ class LayeredModeTests(unittest.TestCase):
                     ("user", "Use unittest for verification."),
                 ],
             )
-            full_result = extract.load_codex_session_messages(session_path, "/tmp/project")
+            full_result = extract.load_codex_session_messages(session_path, "/tmp/project").messages
             original_stat = session_path.stat()
             state = extract.ScopeState(
                 version=extract.STATE_VERSION,
@@ -715,116 +718,151 @@ class LayeredClaudeIntegrationTests(unittest.TestCase):
         self.assertIn("codex", args.source_platforms)
         self.assertIn("claude", args.source_platforms)
 
+    def test_capture_all_default_source_platforms_includes_both(self):
+        """The batch capture CLI default for --source-platforms should include codex and claude."""
+        from memory_promotion.cli import parse_args
 
-class PendingQueueTests(unittest.TestCase):
-    def test_collect_pending_windows_uses_context_window(self):
-        messages = [
-            SimpleNamespace(
-                message_id="m1",
-                platform="codex",
-                session_file="/tmp/session.jsonl",
-                jsonl_line=1,
-                timestamp="2026-03-13T10:00:00Z",
-                role="user",
-                content="Please keep answers concise and update README if behavior changes.",
-            ),
-            SimpleNamespace(
-                message_id="m2",
-                platform="codex",
-                session_file="/tmp/session.jsonl",
-                jsonl_line=2,
-                timestamp="2026-03-13T10:00:05Z",
-                role="assistant",
-                content="Understood, I will keep answers concise and update README as needed.",
-            ),
-            SimpleNamespace(
-                message_id="m3",
-                platform="codex",
-                session_file="/tmp/session.jsonl",
-                jsonl_line=3,
-                timestamp="2026-03-13T10:00:10Z",
-                role="user",
-                content="Implement the parser refactor.",
-            ),
-        ]
+        args = parse_args(["capture-all", "--dry-run"])
+        self.assertIn("codex", args.source_platforms)
+        self.assertIn("claude", args.source_platforms)
 
-        windows = promotion_pipeline.collect_pending_windows("/tmp/project", messages)
 
-        self.assertEqual(len(windows), 1)
-        self.assertEqual(windows[0].message_ids, ("m1", "m2", "m3"))
-        self.assertIn("explicit_request", windows[0].reason_codes)
-
-    def test_process_pending_flush_builds_events_and_rewrites_memory(self):
+class BatchCaptureTests(unittest.TestCase):
+    def test_discover_all_project_paths_merges_claude_and_codex_sources(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            output_dir = Path(tmp_dir) / "output"
-            project_path = "/tmp/project"
-            paths = promotion_pipeline.build_layered_paths(output_dir, project_path)
-            pending_messages = [
-                SimpleNamespace(
-                    message_id="m1",
-                    platform="codex",
-                    session_file="/tmp/session.jsonl",
-                    jsonl_line=1,
-                    timestamp="2026-03-13T10:00:00Z",
-                    role="user",
-                    content="Please keep answers concise.",
-                ),
-                SimpleNamespace(
-                    message_id="m2",
-                    platform="codex",
-                    session_file="/tmp/session.jsonl",
-                    jsonl_line=2,
-                    timestamp="2026-03-13T10:00:05Z",
-                    role="assistant",
-                    content="Understood, I will keep answers concise.",
-                ),
-            ]
-            windows = promotion_pipeline.collect_pending_windows(project_path, pending_messages)
-            promotion_pipeline.save_pending_windows(paths.pending_path, windows)
+            home = Path(tmp_dir)
+            claude_project = (home / "work" / "repo-one").resolve()
+            codex_project = (home / "work" / "repo-two").resolve()
+            claude_project.mkdir(parents=True)
+            codex_project.mkdir(parents=True)
 
-            llm_calls: list[dict[str, object]] = []
-
-            def fake_llm(prompt, **kwargs):
-                llm_calls.append({"prompt": prompt, **kwargs})
-                if kwargs.get("output_schema"):
-                    return json.dumps(
-                        {
-                            "candidates": [
-                                {
-                                    "text": "Keep answers concise.",
-                                    "category": "communication",
-                                    "durability": "durable",
-                                    "signal_type": "explicit",
-                                    "evidence_ids": ["m1", "m2"],
-                                }
-                            ]
-                        }
-                    )
-                return "# Project Memory\n\n## Communication Style\n- Keep answers concise.\n"
-
-            state = extract.ScopeState(version=extract.STATE_VERSION, project_path=project_path)
-            result = promotion_pipeline.process_pending_flush(
-                project_path=project_path,
-                output_dir=output_dir,
-                state=state,
-                llm_call=fake_llm,
-                llm_backend="codex-cli",
-                llm_model=None,
-                now=datetime.fromisoformat("2026-03-13T11:00:00+00:00"),
-                cwd=tmp_dir,
+            claude_encoded = extract.encode_claude_project_path(str(claude_project))
+            claude_project_dir = home / ".claude" / "projects" / claude_encoded
+            claude_project_dir.mkdir(parents=True)
+            (claude_project_dir / "session-claude.jsonl").write_text("{}\n")
+            (home / ".claude" / "history.jsonl").write_text(
+                json.dumps(
+                    {
+                        "project": str(claude_project),
+                        "sessionId": "session-claude",
+                        "timestamp": 1,
+                    }
+                )
             )
 
-            self.assertTrue(result["ready_to_flush"])
-            self.assertEqual(result["raw_event_count"], 1)
-            self.assertEqual(len(llm_calls), 2)
-            self.assertTrue(paths.curated_memory_path.exists())
-            self.assertTrue(paths.deterministic_memory_path.exists())
-            facts = promotion_pipeline.load_searchable_facts(paths.facts_path)
-            self.assertEqual(len(facts), 1)
-            self.assertEqual(facts[0].promotion_state, "promoted")
-            queued = [window for window in promotion_pipeline.load_pending_windows(paths.pending_path) if window.status == "queued"]
-            self.assertEqual(queued, [])
+            codex_session_dir = home / ".codex" / "sessions" / "2026" / "03" / "15"
+            codex_session_dir.mkdir(parents=True)
+            (codex_session_dir / "session-codex.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "session_meta", "payload": {"cwd": str(codex_project)}}),
+                        json.dumps(
+                            {
+                                "type": "response_item",
+                                "timestamp": "2026-03-15T10:00:00Z",
+                                "payload": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_text", "text": "Remember pytest."}],
+                                },
+                            }
+                        ),
+                    ]
+                )
+            )
+            (codex_session_dir / "session-missing.jsonl").write_text(
+                json.dumps({"type": "session_meta", "payload": {"cwd": str(home / "missing-project")}})
+            )
+
+            discovered = promotion_cli.discover_all_project_paths(
+                ["claude", "codex"],
+                paths=extract.PathConfig(home=home),
+            )
+
+            self.assertEqual(discovered, [str(claude_project), str(codex_project)])
+
+    def test_should_skip_recent_checks_capture_state_mtime(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_path = str((Path(tmp_dir) / "repo").resolve())
+            Path(project_path).mkdir()
+            output_dir = Path(tmp_dir) / "output"
+            paths = promotion_pipeline.build_layered_paths(output_dir, project_path)
+            paths.state_path.parent.mkdir(parents=True, exist_ok=True)
+            paths.state_path.write_text("{}")
+
+            self.assertTrue(promotion_cli._should_skip_recent(project_path, output_dir, 6))
+
+            old_timestamp = datetime.fromisoformat("2026-03-14T00:00:00+00:00").timestamp()
+            os.utime(paths.state_path, (old_timestamp, old_timestamp))
+            self.assertFalse(promotion_cli._should_skip_recent(project_path, output_dir, 1))
+
+    def test_run_capture_all_skips_recent_no_sessions_and_continues_on_errors(self):
+        args = SimpleNamespace(
+            output_dir=Path("/tmp/output"),
+            llm_backend="codex-cli",
+            llm_model=None,
+            source_platforms=["codex", "claude"],
+            max_projects=0,
+            skip_if_recent=6,
+            dry_run=False,
+        )
+        discovered_projects = [
+            "/tmp/recent-project",
+            "/tmp/no-sessions-project",
+            "/tmp/parse-error-project",
+            "/tmp/exception-project",
+            "/tmp/success-project",
+        ]
+        project_sessions = {
+            "/tmp/parse-error-project": {"codex": [Path("/tmp/parse-error.jsonl")]},
+            "/tmp/exception-project": {"codex": [Path("/tmp/exception.jsonl")]},
+            "/tmp/success-project": {"codex": [Path("/tmp/success.jsonl")]},
+        }
+
+        def fake_skip_recent(project_path: str, output_dir: Path, skip_if_recent_hours: int) -> bool:
+            self.assertEqual(output_dir, args.output_dir)
+            self.assertEqual(skip_if_recent_hours, 6)
+            return project_path == "/tmp/recent-project"
+
+        def fake_capture(project_args, *, project_path=None, project_sessions=None):
+            self.assertEqual(project_args.source_platforms, args.source_platforms)
+            if project_path == "/tmp/parse-error-project":
+                return promotion_cli.CaptureProjectResult(
+                    project_path=project_path,
+                    exit_code=1,
+                    had_sessions=True,
+                    new_message_count=3,
+                )
+            if project_path == "/tmp/exception-project":
+                raise RuntimeError("boom")
+            if project_path == "/tmp/success-project":
+                return promotion_cli.CaptureProjectResult(
+                    project_path=project_path,
+                    exit_code=0,
+                    had_sessions=True,
+                    new_message_count=5,
+                    raw_event_count=2,
+                )
+            raise AssertionError(f"Unexpected project_path: {project_path}")
+
+        with (
+            patch("memory_promotion.cli.discover_all_project_paths", return_value=discovered_projects),
+            patch("memory_promotion.cli._should_skip_recent", side_effect=fake_skip_recent),
+            patch(
+                "memory_promotion.cli._discover_project_sessions",
+                side_effect=lambda project_path, source_platforms: project_sessions.get(project_path, {}),
+            ),
+            patch("memory_promotion.cli._capture_project", side_effect=fake_capture),
+            patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            result = promotion_cli.run_capture_all(args)
+
+        self.assertEqual(result, 1)
+        output = stdout.getvalue()
+        self.assertIn("5 projects discovered, 2 processed, 1 skipped (recent), 1 skipped (no sessions)", output)
+        self.assertIn("Total new messages: 8", output)
+        self.assertIn("Total raw events captured: 2", output)
+        self.assertIn("Errors: 2", output)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class PendingQueueTests.

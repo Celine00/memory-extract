@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 LAUNCH_AGENT_LABEL = "com.memoryextract.codex-auto-memory"
+DEFAULT_BATCH_LABEL = "com.memoryextract.batch-capture"
 DEFAULT_INTERVAL_SECONDS = 300
+BATCH_INTERVAL_SECONDS = 43200
 LAUNCH_AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
 LOG_DIR = Path("~/Library/Logs/memory-extract").expanduser()
 PASSTHROUGH_ENV_VARS = (
@@ -83,25 +85,47 @@ def _selected_environment_variables() -> dict[str, str]:
     return selected
 
 
-def install_launch_agent(args: argparse.Namespace) -> int:
-    repo_root = Path(__file__).resolve().parent.parent
-    runner_script = repo_root / "scripts" / "run-observed-repo-flushes"
-    stdout_path = LOG_DIR / "codex-auto-memory.stdout.log"
-    stderr_path = LOG_DIR / "codex-auto-memory.stderr.log"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    stdout_path.touch(exist_ok=True)
-    stderr_path.touch(exist_ok=True)
+def _resolve_runner_script(repo_root: Path, runner_script: str) -> Path:
+    candidate = Path(runner_script).expanduser()
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    resolved = candidate.resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Runner script does not exist: {resolved}")
+    return resolved
 
+
+def _install_environment_variables(args: argparse.Namespace) -> dict[str, str]:
     environment_variables = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONUNBUFFERED": "1",
         "LLM_BACKEND": args.llm_backend,
-        "IDLE_MINUTES": str(args.idle_minutes),
-        "MAX_PENDING_MINUTES": str(args.max_pending_minutes),
     }
+    if getattr(args, "idle_minutes", None) is not None:
+        environment_variables["IDLE_MINUTES"] = str(args.idle_minutes)
+    if getattr(args, "max_pending_minutes", None) is not None:
+        environment_variables["MAX_PENDING_MINUTES"] = str(args.max_pending_minutes)
+    if getattr(args, "output_dir", None):
+        environment_variables["OUTPUT_DIR"] = str(args.output_dir)
+    if getattr(args, "skip_if_recent", None) is not None:
+        environment_variables["SKIP_RECENT"] = str(args.skip_if_recent)
     environment_variables.update(_selected_environment_variables())
     if args.llm_model:
         environment_variables["LLM_MODEL"] = args.llm_model
+    return environment_variables
+
+
+def install_launch_agent(args: argparse.Namespace) -> int:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner_script = _resolve_runner_script(repo_root, args.runner_script)
+    log_stem = args.label.replace("/", "_")
+    stdout_path = LOG_DIR / f"{log_stem}.stdout.log"
+    stderr_path = LOG_DIR / f"{log_stem}.stderr.log"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stdout_path.touch(exist_ok=True)
+    stderr_path.touch(exist_ok=True)
+
+    environment_variables = _install_environment_variables(args)
 
     plist_path = launch_agent_plist_path(args.label)
     plist_content = build_launch_agent_plist(
@@ -154,6 +178,10 @@ def status_launch_agent(args: argparse.Namespace) -> int:
     print(f"llm_backend: {environment_variables.get('LLM_BACKEND', 'codex-cli')}")
     print(f"idle_minutes: {environment_variables.get('IDLE_MINUTES', '25')}")
     print(f"max_pending_minutes: {environment_variables.get('MAX_PENDING_MINUTES', '90')}")
+    if environment_variables.get("OUTPUT_DIR"):
+        print(f"output_dir: {environment_variables['OUTPUT_DIR']}")
+    if environment_variables.get("SKIP_RECENT"):
+        print(f"skip_recent_hours: {environment_variables['SKIP_RECENT']}")
     print(
         "aihezu_oai_key: "
         + ("configured" if environment_variables.get("AIHEZU_OAI_KEY") else "missing")
@@ -174,7 +202,25 @@ def parse_args() -> argparse.Namespace:
     install_parser.add_argument("--llm-model", default=None)
     install_parser.add_argument("--idle-minutes", type=int, default=25)
     install_parser.add_argument("--max-pending-minutes", type=int, default=90)
+    install_parser.add_argument("--runner-script", default="scripts/run-observed-repo-flushes")
     install_parser.set_defaults(handler=install_launch_agent)
+
+    install_batch_parser = subparsers.add_parser(
+        "install-batch",
+        help="Install or update the twice-daily batch capture LaunchAgent.",
+    )
+    install_batch_parser.add_argument("--label", default=DEFAULT_BATCH_LABEL)
+    install_batch_parser.add_argument("--interval-seconds", type=int, default=BATCH_INTERVAL_SECONDS)
+    install_batch_parser.add_argument("--llm-backend", default="codex-cli")
+    install_batch_parser.add_argument("--llm-model", default=None)
+    install_batch_parser.add_argument("--runner-script", default="scripts/run-batch-capture")
+    install_batch_parser.add_argument("--output-dir", default="./output")
+    install_batch_parser.add_argument("--skip-if-recent", type=int, default=6)
+    install_batch_parser.set_defaults(
+        handler=install_launch_agent,
+        idle_minutes=None,
+        max_pending_minutes=None,
+    )
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Unload and remove the LaunchAgent.")
     uninstall_parser.add_argument("--label", default=LAUNCH_AGENT_LABEL)
