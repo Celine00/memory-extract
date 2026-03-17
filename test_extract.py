@@ -11,6 +11,7 @@ from unittest.mock import patch
 import extract
 import prompts as prompt_templates
 from memory_promotion import cli as promotion_cli
+from memory_promotion import models as promotion_models
 from memory_promotion import pipeline as promotion_pipeline
 
 
@@ -292,6 +293,27 @@ class PromptTemplateTests(unittest.TestCase):
         self.assertIn("Return JSON only. No markdown fences. No prose.", prompt)
         self.assertIn("Use python3 -m unittest -q", prompt)
 
+    def test_build_layered_prompt_mentions_behavioral_signals_and_documentation_style(self):
+        prompt = promotion_pipeline.build_layered_prompt(
+            project_path="/tmp/project",
+            existing_memory="# Existing memory",
+            messages=[
+                extract.build_message(
+                    platform="codex",
+                    project_path="/tmp/project",
+                    role="user",
+                    content="Remove bold and horizontal rules from docs.",
+                    timestamp="2026-03-15T10:00:00Z",
+                    session_file="/tmp/project/session.jsonl",
+                    jsonl_line=3,
+                )
+            ],
+        )
+
+        self.assertIn("Behavioral Signals", prompt)
+        self.assertIn("documentation_style", prompt)
+        self.assertIn("signal_type rules:", prompt)
+
     def test_load_prompt_raises_clear_error_for_missing_template(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing_dir = Path(tmp_dir)
@@ -364,6 +386,87 @@ class LayeredModeTests(unittest.TestCase):
         self.assertEqual(candidates[0].evidence[0].jsonl_line, 2)
         self.assertEqual(candidates[0].evidence[0].platform, "codex")
 
+    def test_consolidate_facts_reclassifies_doc_style_communication_fact(self):
+        event = promotion_models.MemoryEvent(
+            event_id="evt-1",
+            project_path="/tmp/project",
+            session_file="/tmp/project/session.jsonl",
+            jsonl_line_range=(4, 4),
+            observed_at="2026-03-15T10:00:00Z",
+            role_window_hash="window-1",
+            candidate_text="Avoid bold headings and horizontal rules in docs.",
+            normalized_text="Avoid bold headings and horizontal rules in docs.",
+            category="communication",
+            durability="durable",
+            signal_type="explicit",
+            evidence=(),
+            source_platform="codex",
+            turn_id="/tmp/project/session.jsonl:4",
+        )
+
+        facts = promotion_pipeline.consolidate_facts("/tmp/project", [event])
+        facts, promoted = promotion_pipeline.apply_promotion(facts)
+        memory_content = promotion_pipeline.compile_curated_memory(facts)
+
+        self.assertEqual(len(promoted), 1)
+        self.assertEqual(facts[0].category, "documentation_style")
+        self.assertIn("## Documentation Style", memory_content)
+        self.assertIn("Avoid bold headings and horizontal rules in docs.", memory_content)
+
+    def test_process_capture_rewrites_curated_memory(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "out"
+            project_path = "/tmp/project"
+            message = extract.build_message(
+                platform="codex",
+                project_path=project_path,
+                role="user",
+                content="Remove bold and horizontal rules from docs.",
+                timestamp="2026-03-15T10:00:00Z",
+                session_file="/tmp/project/session.jsonl",
+                jsonl_line=2,
+            )
+            state = extract.ScopeState(version=extract.STATE_VERSION, project_path=project_path)
+            llm_calls: list[dict[str, object]] = []
+
+            def fake_llm(prompt: str, **kwargs):
+                llm_calls.append({"prompt": prompt, **kwargs})
+                if kwargs.get("output_schema"):
+                    return json.dumps(
+                        {
+                            "candidates": [
+                                {
+                                    "text": "Avoid bold and horizontal rules in docs.",
+                                    "category": "documentation_style",
+                                    "durability": "durable",
+                                    "signal_type": "explicit",
+                                    "evidence_ids": [message.message_id],
+                                }
+                            ]
+                        }
+                    )
+                return "# Project Memory\n\n## Documentation Style\n- Avoid bold and horizontal rules in docs.\n"
+
+            result = promotion_pipeline.process_capture(
+                project_path=project_path,
+                output_dir=output_dir,
+                state=state,
+                new_messages=[message],
+                updated_sessions={},
+                llm_call=fake_llm,
+                llm_backend="codex-cli",
+                llm_model=None,
+                now=datetime.fromisoformat("2026-03-15T11:00:00+00:00"),
+                cwd=tmp_dir,
+            )
+            paths = result.paths
+
+            self.assertEqual(len(llm_calls), 2)
+            self.assertTrue(paths.curated_memory_path.exists())
+            self.assertTrue(paths.deterministic_memory_path.exists())
+            self.assertIn("## Documentation Style", paths.curated_memory_path.read_text())
+            self.assertIn("## Documentation Style", paths.deterministic_memory_path.read_text())
+
     def test_collect_incremental_scope_messages_rescans_on_shrink_without_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_path = Path(tmp_dir) / "session.jsonl"
@@ -427,7 +530,7 @@ class LayeredModeTests(unittest.TestCase):
             first_user_id = next(message.message_id for message in first_messages if message.role == "user")
 
             call_count = {"value": 0}
-            responses: list[str] = [
+            extraction_responses: list[str] = [
                 json.dumps(
                     {
                         "candidates": [
@@ -442,13 +545,18 @@ class LayeredModeTests(unittest.TestCase):
                     }
                 ),
             ]
+            rewrite_responses: list[str] = [
+                "# Project Memory\n\n## Communication Style\n- User prefers concise repo updates.\n",
+            ]
 
             original_call_llm = extract.call_llm
             try:
                 def fake_call_llm(prompt: str, dry_run: bool = False, **kwargs) -> str:
-                    del prompt, dry_run, kwargs
+                    del prompt, dry_run
                     call_count["value"] += 1
-                    return responses.pop(0)
+                    if kwargs.get("output_schema"):
+                        return extraction_responses.pop(0)
+                    return rewrite_responses.pop(0)
 
                 extract.call_llm = fake_call_llm
 
@@ -459,7 +567,7 @@ class LayeredModeTests(unittest.TestCase):
                 first_facts = layered_paths.facts_path.read_text()
 
                 extract.process_layered_scope(scope_key, {"codex": [session_path]}, args, now=now)
-                self.assertEqual(call_count["value"], 1)
+                self.assertEqual(call_count["value"], 2)
                 self.assertEqual(layered_paths.raw_daily_path.read_text(), first_raw)
                 self.assertEqual(layered_paths.curated_memory_path.read_text(), first_memory)
                 self.assertEqual(layered_paths.facts_path.read_text(), first_facts)
@@ -474,7 +582,7 @@ class LayeredModeTests(unittest.TestCase):
                 )
                 second_messages = extract.load_codex_session_messages(session_path, "/tmp/project").messages
                 second_user_id = second_messages[-1].message_id
-                responses.append(
+                extraction_responses.append(
                     json.dumps(
                         {
                             "candidates": [
@@ -489,6 +597,9 @@ class LayeredModeTests(unittest.TestCase):
                         }
                     )
                 )
+                rewrite_responses.append(
+                    "# Project Memory\n\n## Communication Style\n- User prefers concise repo updates.\n\n## Workflow Patterns\n- Use unittest for verification in this repo.\n"
+                )
 
                 extract.process_layered_scope(scope_key, {"codex": [session_path]}, args, now=now)
             finally:
@@ -501,7 +612,7 @@ class LayeredModeTests(unittest.TestCase):
             final_memory = layered_paths.curated_memory_path.read_text()
             state = json.loads(layered_paths.state_path.read_text())
 
-        self.assertEqual(call_count["value"], 2)
+        self.assertEqual(call_count["value"], 4)
         self.assertEqual(len(final_raw.splitlines()), 2)
         self.assertIn("User prefers concise repo updates.", final_facts)
         self.assertIn("Use unittest for verification in this repo.", final_facts)

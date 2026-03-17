@@ -22,6 +22,7 @@ PENDING_WINDOW_STATUSES = ("queued", "flushed", "dropped")
 
 CANDIDATE_CATEGORIES = (
     "language",
+    "documentation_style",
     "communication",
     "workflow",
     "tooling",
@@ -32,6 +33,7 @@ CANDIDATE_CATEGORIES = (
 
 CATEGORY_TITLES = {
     "language": "Language Preference",
+    "documentation_style": "Documentation Style",
     "communication": "Communication Style",
     "workflow": "Workflow Patterns",
     "tooling": "Tools And Stack",
@@ -46,12 +48,13 @@ PROMOTION_STATES = ("never", "candidate", "promoted", "demoted")
 
 CATEGORY_PRIORITY = {
     "explicit_request": 0,
-    "communication": 1,
-    "workflow": 2,
-    "tooling": 3,
-    "project_context": 4,
-    "language": 5,
-    "other": 6,
+    "documentation_style": 1,
+    "communication": 2,
+    "workflow": 3,
+    "tooling": 4,
+    "project_context": 5,
+    "language": 6,
+    "other": 7,
 }
 
 
