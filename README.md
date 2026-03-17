@@ -130,8 +130,8 @@ output/
   .state/{project_slug}.ingest.json       # ingest checkpoint
   .state/{project_slug}.flush.json        # flush 去重状态
   project/{project_slug}/
-    MEMORY.md                             # 最终 curated memory
-    MEMORY.deterministic.md               # 规则版 fallback
+    MEMORY.md                             # LLM 重写后的 curated memory
+    MEMORY.deterministic.md               # 规则生成的基线版本
     memory/
       pending/queue.jsonl                 # 候选窗口队列
       raw/YYYY-MM-DD.jsonl               # append-only 原始事件
@@ -141,6 +141,24 @@ output/
 ```
 
 审查顺序建议：`raw/` → `searchable/facts.jsonl` → `audit/` → `MEMORY.md`
+
+`capture` 和 `flush-pending` 都会同时更新这两个文件：
+
+- `MEMORY.deterministic.md`：按规则渲染的稳定基线，便于审查和 diff
+- `MEMORY.md`：在同一批 promoted facts 之上做一次 LLM consolidation，用于实际阅读
+
+## Layered 分类
+
+当前 layered pipeline 使用以下分类：
+
+- `documentation_style`：文档格式、markdown 结构、图表风格、标题和列表规则
+- `communication`：语气、回复风格、语言选择、简洁度
+- `workflow`：计划、验证、review、提交习惯
+- `tooling`：工具选择、权限偏好、环境或运行方式
+- `project_context`：稳定的项目结构约束和仓库事实
+- `language`：独立于整体回复风格的语言偏好
+- `explicit_request`：用户明确使用 memory-intent 语言提出的长期要求
+- `other`：暂时无法归类但仍可能持久的条目
 
 ## 环境
 

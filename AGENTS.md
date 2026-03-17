@@ -40,8 +40,8 @@ output/
   .state/{project_slug}.ingest.json       # ingest checkpoint
   .state/{project_slug}.flush.json        # flush dedup state
   project/{project_slug}/
-    MEMORY.md                             # curated memory (LLM-rewritten)
-    MEMORY.deterministic.md               # deterministic fallback
+    MEMORY.md                             # curated memory (LLM-rewritten from promoted facts)
+    MEMORY.deterministic.md               # deterministic baseline from the same promoted facts
     memory/
       pending/queue.jsonl                 # candidate window queue
       raw/YYYY-MM-DD.jsonl               # append-only MemoryEvent
@@ -51,6 +51,16 @@ output/
 ```
 
 `project_slug`: 项目路径最后两个目录名，如 `/Users/celinezou/Celine00/memory-extract` → `Celine00-memory-extract`
+
+Layered taxonomy:
+- `documentation_style`: 文档格式、markdown 结构、图表/颜色/标题/列表规则
+- `communication`: 语气、回复风格、语言选择、简洁度
+- `workflow`: 计划、验证、review、提交习惯
+- `tooling`: 工具、权限、环境偏好
+- `project_context`: 稳定项目约束和仓库结构事实
+- `language`: 独立语言偏好
+- `explicit_request`: 明确带 memory-intent 的长期要求
+- `other`: 其余持久条目
 
 ## Editing Expectations
 

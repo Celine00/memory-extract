@@ -58,6 +58,24 @@ from .models import (
 )
 
 MAX_MESSAGES_PER_SCOPE = 200
+DOCUMENTATION_STYLE_KEYWORDS = {
+    "bold",
+    "heading",
+    "mermaid",
+    "emoji",
+    "horizontal",
+    "numbering",
+    "diagram",
+    "color",
+    "font",
+    "format",
+    "markdown",
+    "table",
+    "bullet",
+    "indent",
+    "---",
+    "**",
+}
 
 LAYERED_CANDIDATE_JSON_SCHEMA = {
     "type": "object",
@@ -1072,8 +1090,21 @@ def _status_for_events(events: Sequence[MemoryEvent]) -> str:
     return "tentative"
 
 
+def maybe_reclassify_category(text: str, category: str) -> str:
+    if category != "communication":
+        return category
+    lower = text.lower()
+    if any(keyword in lower for keyword in DOCUMENTATION_STYLE_KEYWORDS):
+        return "documentation_style"
+    return category
+
+
+def _event_category(event: MemoryEvent) -> str:
+    return maybe_reclassify_category(event.candidate_text or event.normalized_text, event.category)
+
+
 def _best_category(events: Sequence[MemoryEvent]) -> str:
-    categories = {event.category for event in events}
+    categories = {_event_category(event) for event in events}
     return min(categories, key=lambda category: CATEGORY_PRIORITY.get(category, 99))
 
 
@@ -1761,7 +1792,7 @@ def process_capture(
         llm_model=llm_model,
         dry_run=dry_run,
         cwd=cwd,
-        rewrite_memory=False,
+        rewrite_memory=True,
     )
 
     state.sessions = updated_sessions
